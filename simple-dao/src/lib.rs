@@ -32,29 +32,26 @@ contract! {
     }
 
     impl SimpleDao {
-        pub(external) fn add_voter(&mut self) {
+        pub(external) fn register(&mut self) {
             if self.voters.get(&env.caller()).is_none() {
                 self.voters.insert(env.caller(), RoleType::Default);
             }
         }
 
         pub(external) fn vote(&mut self, proposal: u32, vote: bool) {
+            let vote_hook = if vote {
+                &mut self.yes_votes
+            } else {
+                &mut self.no_votes
+            };
+
             if let Some(_) = self.voters.get(&env.caller()) {
-                if vote {
-                    let yes_votes = match self.yes_votes.get(&proposal) {
-                        Some(ct) => *ct as u32,
-                        None => 0,
-                    };
+                let votes = match vote_hook.get(&proposal) {
+                    Some(ct) => *ct as u32,
+                    None => 0,
+                };
 
-                    self.yes_votes.insert(proposal, yes_votes + 1);
-                } else {
-                    let no_votes = match self.no_votes.get(&proposal) {
-                        Some(ct) => *ct as u32,
-                        None => 0,
-                    };
-
-                    self.no_votes.insert(proposal, no_votes + 1);
-                }
+                vote_hook.insert(proposal, votes + 1);
             }
         }
 
@@ -73,9 +70,24 @@ mod tests {
     #[test]
     fn should_have_one_voter_on_deploy() {
         let alice = AccountId::from([0x0; 32]);
+        env::test::set_caller::<Types>(alice);
+        let contract = SimpleDao::deploy_mock();
+        assert_eq!(contract.get_voter_count(), 1);
+    }
 
+    #[test]
+    fn should_register_voters() {
+        let alice = AccountId::from([0x0; 32]);
         env::test::set_caller::<Types>(alice);
         let mut contract = SimpleDao::deploy_mock();
-        assert_eq!(contract.get_voter_count(), 1);
+        
+        let bob = AccountId::from([0x01; 32]);
+        env::test::set_caller::<Types>(bob);
+        contract.register();
+
+        let charlie = AccountId::from([0x02; 32]);
+        env::test::set_caller::<Types>(charlie);
+        contract.register();
+        assert_eq!(contract.get_voter_count(), 3);
     }
 }

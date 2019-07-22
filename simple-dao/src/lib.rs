@@ -1,8 +1,8 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 use parity_codec::*;
+
 use ink_core::{
     env::DefaultSrmlTypes,
-    memory::format,
     storage,
 };
 use ink_lang::contract;
@@ -18,6 +18,11 @@ pub enum RoleType {
 
 contract! {
     #![env = DefaultSrmlTypes]
+
+    event Vote {
+        voter: Option<AccountId>,
+        vote: bool,
+    }
 
     struct SimpleDao {
         voters: storage::HashMap<AccountId, RoleType>,
@@ -61,6 +66,10 @@ contract! {
                 };
 
                 vote_hook.insert(prop_id, votes + 1);
+                env.emit(Vote {
+                    voter: Some(env.caller()),
+                    vote: vote,
+                })
             }
         }
 

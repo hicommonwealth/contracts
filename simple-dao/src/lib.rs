@@ -25,21 +25,27 @@ contract! {
     }
 
     struct SimpleDao {
+        // voters have a role and an id (identified by their place in registration)
         voters: storage::HashMap<AccountId, (RoleType, u32)>,
+        // proposals have an id and are represented by a 32-byte description
         proposals: storage::HashMap<u32, [u8; 32]>,
-        votes: storage::HashMap<(u32, u32), bool>,
+        // votes map a proposal id and a voter id to a binary vote
+        vote_index: storage::HashMap<(u32, u32), u32>,
+        // vote arrays
+        votes: storage::HashMap<u32, storage::Vec<bool>>,
+
     }
 
     impl Deploy for SimpleDao {
         fn deploy(&mut self) {
-            self.voters.insert(env.caller(), RoleType::Admin);
+            self.voters.insert(env.caller(), (RoleType::Admin, self.voters.len()));
         }
     }
 
     impl SimpleDao {
         pub(external) fn register(&mut self) {
             if self.voters.get(&env.caller()).is_none() {
-                self.voters.insert(env.caller(), RoleType::Default);
+                self.voters.insert(env.caller(), (RoleType::Default, self.voters.len()));
             }
         }
 
@@ -51,23 +57,50 @@ contract! {
 
         pub(external) fn vote(&mut self, prop_id: u32, vote: bool) {
             if prop_id > self.proposals.len() { return; }
-            if let Some(_) = self.voters.get(&env.caller()) {
-                self.votes.insert((prop_id, env.caller()), vote);
-                env.emit(Vote {
-                    voter: Some(env.caller()),
-                    vote: vote,
-                });
+            // grab voter if already registered
+            if let Some(voter) = self.voters.get(&env.caller()) {
+                // grab existing or new vote vec
+                if let Some(votes) = self.votes.get(&prop_id) {
+                    // if the voter has voted, change vote, otherwise create vote record
+                    if let Some(vote_inx) = self.vote_index.get(&(prop_id, voter.1)) {
+                        votes[*vote_inx] = vote;
+                    } else {
+                        self.vote_index.insert((prop_id, voter.1), votes.len());
+                        votes.push(vote);
+                    }
+                    // insert new votes vec into storage
+                    self.votes.insert(prop_id, *votes);
+                    // emit vote event
+                    env.emit(Vote {
+                        voter: Some(env.caller()),
+                        vote: vote,
+                    });
+                };
             }
         }
 
         pub(external) fn get_proposal(&self, prop_id: u32) -> ([u8; 32], u32, u32) {
             if prop_id > self.proposals.len() { return ([0x0; 32], 0, 0); }
+            // get proposal description
             let desc = match self.proposals.get(&prop_id) {
                 Some(d) => *d,
                 None => [0x0; 32],
             };
+
+            let (yes_votes, no_votes) = match self.votes.get(&prop_id) {
+                Some(votes) => {
+                    let (yes_votes, no_votes) = (0, 0);
+                    for v in votes.iter() {
+                        if *v { yes_votes += 1 }
+                        else { no_votes += 1 };
+                    }
+                    (yes_votes, no_votes)
+                },
+                None => (0, 0),
+            };
+
             // return values
-            (desc)
+            (desc, yes_votes, no_votes)
         }
 
         pub(external) fn get_voter_count(&self) -> u32 {

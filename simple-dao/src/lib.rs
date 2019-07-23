@@ -25,10 +25,9 @@ contract! {
     }
 
     struct SimpleDao {
-        voters: storage::HashMap<AccountId, RoleType>,
+        voters: storage::HashMap<AccountId, (RoleType, u32)>,
         proposals: storage::HashMap<u32, [u8; 32]>,
-        yes_votes: storage::HashMap<u32, u32>,
-        no_votes: storage::HashMap<u32, u32>
+        votes: storage::HashMap<(u32, u32), bool>,
     }
 
     impl Deploy for SimpleDao {
@@ -52,24 +51,12 @@ contract! {
 
         pub(external) fn vote(&mut self, prop_id: u32, vote: bool) {
             if prop_id > self.proposals.len() { return; }
-
-            let vote_hook = if vote {
-                &mut self.yes_votes
-            } else {
-                &mut self.no_votes
-            };
-
             if let Some(_) = self.voters.get(&env.caller()) {
-                let votes = match vote_hook.get(&prop_id) {
-                    Some(ct) => *ct as u32,
-                    None => 0,
-                };
-
-                vote_hook.insert(prop_id, votes + 1);
+                self.votes.insert((prop_id, env.caller()), vote);
                 env.emit(Vote {
                     voter: Some(env.caller()),
                     vote: vote,
-                })
+                });
             }
         }
 
@@ -79,16 +66,8 @@ contract! {
                 Some(d) => *d,
                 None => [0x0; 32],
             };
-            let yes_votes = match self.yes_votes.get(&prop_id) {
-                Some(y) => *y,
-                None => 0,
-            };
-            let no_votes = match self.no_votes.get(&prop_id) {
-                Some(n) => *n,
-                None => 0,
-            };
             // return values
-            (desc, yes_votes, no_votes)
+            (desc)
         }
 
         pub(external) fn get_voter_count(&self) -> u32 {
@@ -116,7 +95,7 @@ mod tests {
         let alice = AccountId::from([0x0; 32]);
         env::test::set_caller::<Types>(alice);
         let mut contract = SimpleDao::deploy_mock();
-        
+
         let bob = AccountId::from([0x01; 32]);
         env::test::set_caller::<Types>(bob);
         contract.register();
@@ -146,10 +125,5 @@ mod tests {
         contract.register();
         contract.vote(0, false);
         assert_eq!(contract.get_voter_count(), 3);
-
-        let prop_data = contract.get_proposal(0);
-        assert_eq!(prop_data.0, descriptor);
-        assert_eq!(prop_data.1, 1);
-        assert_eq!(prop_data.2, 2);
     }
 }

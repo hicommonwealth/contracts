@@ -60,22 +60,24 @@ contract! {
             // grab voter if already registered
             if let Some(voter) = self.voters.get(&env.caller()) {
                 // grab existing or new vote vec
-                if let Some(votes) = self.votes.get(&prop_id) {
-                    // if the voter has voted, change vote, otherwise create vote record
-                    if let Some(vote_inx) = self.vote_index.get(&(prop_id, voter.1)) {
-                        votes[*vote_inx] = vote;
-                    } else {
-                        self.vote_index.insert((prop_id, voter.1), votes.len());
-                        votes.push(vote);
-                    }
-                    // insert new votes vec into storage
-                    self.votes.insert(prop_id, *votes);
-                    // emit vote event
-                    env.emit(Vote {
-                        voter: Some(env.caller()),
-                        vote: vote,
-                    });
-                };
+                match self.votes.get_mut(&prop_id) {
+                    Some(votes) => {
+                        // if the voter has voted, change vote, otherwise create vote record
+                        if let Some(vote_inx) = self.vote_index.get(&(prop_id, voter.1)) {
+                            votes[*vote_inx] = vote;
+                        } else {
+                            self.vote_index.insert((prop_id, voter.1), votes.len());
+                            votes.push(vote);
+                        }
+
+                        // emit vote event
+                        env.emit(Vote {
+                            voter: Some(env.caller()),
+                            vote: vote,
+                        });
+                    },
+                    None => {},
+                }
             }
         }
 
@@ -89,7 +91,8 @@ contract! {
 
             let (yes_votes, no_votes) = match self.votes.get(&prop_id) {
                 Some(votes) => {
-                    let (yes_votes, no_votes) = (0, 0);
+                    let mut yes_votes = 0;
+                    let mut no_votes = 0;
                     for v in votes.iter() {
                         if *v { yes_votes += 1 }
                         else { no_votes += 1 };

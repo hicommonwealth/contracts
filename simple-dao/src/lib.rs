@@ -64,7 +64,9 @@ contract! {
                     Some(next_index) => {
                         // if the voter has voted, change vote, otherwise create vote record
                         if let Some(vote_inx) = self.vote_index.get(&(prop_id, voter.1)) {
-                            self.votes.insert((prop_id, *vote_inx), vote);
+                            if let Some(v) = self.votes.get_mut(&(prop_id, *vote_inx)) {
+                                *v = vote;
+                            }
                         } else {
                             // add new vote at the next vote index
                             self.votes.insert((prop_id, *next_index), vote);
@@ -172,5 +174,21 @@ mod tests {
         let result = contract.get_proposal(0);
         assert_eq!(result.1[0], 3);
         assert_eq!(result.0, [0x09; 32]);
+    }
+
+    #[test]
+    fn should_let_one_change_a_vote() {
+        let alice = AccountId::from([0x0; 32]);
+        env::test::set_caller::<Types>(alice);
+        let mut contract = SimpleDao::deploy_mock();
+        let descriptor = [0x09; 32];
+        contract.create_proposal(descriptor);
+        contract.vote(0, [1]);
+        let mut result = contract.get_proposal(0);
+        assert_eq!(result.1[1], 1);
+        contract.vote(0, [0]);
+        result = contract.get_proposal(0);
+        assert_eq!(result.1[0], 1);
+        assert_eq!(result.1[1], 0);
     }
 }

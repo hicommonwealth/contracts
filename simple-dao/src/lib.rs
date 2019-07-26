@@ -14,14 +14,12 @@ pub enum RoleType {
     Admin,
 }
 
-
-
 contract! {
     #![env = DefaultSrmlTypes]
 
     event Vote {
         voter: Option<AccountId>,
-        vote: bool,
+        vote: [u8; 1],
     }
 
     struct SimpleDao {
@@ -29,10 +27,12 @@ contract! {
         voters: storage::HashMap<AccountId, (RoleType, u32)>,
         // proposals have an id and are represented by a 32-byte description
         proposals: storage::HashMap<u32, [u8; 32]>,
-        // votes map a proposal id and a voter id to a binary vote
+        // vote indices map a (prop_id, voter_id) => vote_index
         vote_index: storage::HashMap<(u32, u32), u32>,
-        // vote arrays
-        votes: storage::HashMap<u32, storage::Vec<bool>>,
+        // max vote index for particular proposal
+        next_vote_index: storage::HashMap<u32, u32>,
+        // vote arrays indexed by (prop_id, vote_index) => vote (256 options)
+        votes: storage::HashMap<(u32, u32), [u8; 1]>,
 
     }
 
@@ -55,55 +55,62 @@ contract! {
 
         }
 
-        pub(external) fn vote(&mut self, prop_id: u32, vote: bool) {
+        pub(external) fn vote(&mut self, prop_id: u32, vote: [u8; 1]) {
             if prop_id > self.proposals.len() { return; }
             // grab voter if already registered
             if let Some(voter) = self.voters.get(&env.caller()) {
                 // grab existing or new vote vec
-                match self.votes.get_mut(&prop_id) {
-                    Some(votes) => {
+                match self.next_vote_index.get_mut(&(prop_id)) {
+                    Some(next_index) => {
                         // if the voter has voted, change vote, otherwise create vote record
                         if let Some(vote_inx) = self.vote_index.get(&(prop_id, voter.1)) {
-                            votes[*vote_inx] = vote;
+                            self.votes.insert((prop_id, *vote_inx), vote);
                         } else {
-                            self.vote_index.insert((prop_id, voter.1), votes.len());
-                            votes.push(vote);
+                            // add new vote at the next vote index
+                            self.votes.insert((prop_id, *next_index), vote);
+                            // map (prop_id, voter_id) => vote_index
+                            self.vote_index.insert((prop_id, voter.1), *next_index);
+                            // increment next index
+                            *next_index += 1;
                         }
-
-                        // emit vote event
-                        env.emit(Vote {
-                            voter: Some(env.caller()),
-                            vote: vote,
-                        });
                     },
-                    None => {},
+                    None => {
+                        // map (prop_id, voter_id) to zero'th index, as the first voter for the proposal
+                        self.vote_index.insert((prop_id, voter.1), 0);
+                        // set the next vote index to 1
+                        self.next_vote_index.insert(prop_id, 1);
+                        // map (prop_id, vote_index) => vote for the first voter
+                        self.votes.insert((prop_id, 0), vote);
+                    },
                 }
+
+                // emit vote event
+                env.emit(Vote {
+                    voter: Some(env.caller()),
+                    vote: vote,
+                });
             }
         }
 
-        pub(external) fn get_proposal(&self, prop_id: u32) -> ([u8; 32], u32, u32) {
-            if prop_id > self.proposals.len() { return ([0x0; 32], 0, 0); }
+        pub(external) fn get_proposal(&self, prop_id: u32) -> ([u8; 32], [u32; 256]) {
+            if prop_id > self.proposals.len() { return ([0x0; 32], [0; 256]); }
             // get proposal description
             let desc = match self.proposals.get(&prop_id) {
                 Some(d) => *d,
                 None => [0x0; 32],
             };
 
-            let (yes_votes, no_votes) = match self.votes.get(&prop_id) {
-                Some(votes) => {
-                    let mut yes_votes = 0;
-                    let mut no_votes = 0;
-                    for v in votes.iter() {
-                        if *v { yes_votes += 1 }
-                        else { no_votes += 1 };
+            let mut tally = [0; 256];
+            if let Some(next_index) = self.next_vote_index.get(&prop_id) {
+                for i in 0..*next_index {
+                    if let Some(vote) = self.votes.get(&(prop_id, i)) {
+                        tally[vote[0] as usize] += 1;
                     }
-                    (yes_votes, no_votes)
-                },
-                None => (0, 0),
-            };
+                }
+            }
 
             // return values
-            (desc, yes_votes, no_votes)
+            (desc, tally)
         }
 
         pub(external) fn get_voter_count(&self) -> u32 {
@@ -149,17 +156,21 @@ mod tests {
         let mut contract = SimpleDao::deploy_mock();
         let descriptor = [0x09; 32];
         contract.create_proposal(descriptor);
-        contract.vote(0, true);
+        contract.vote(0, [0]);
 
         let bob = AccountId::from([0x01; 32]);
         env::test::set_caller::<Types>(bob);
         contract.register();
-        contract.vote(0, false);
+        contract.vote(0, [0]);
 
         let charlie = AccountId::from([0x02; 32]);
         env::test::set_caller::<Types>(charlie);
         contract.register();
-        contract.vote(0, false);
+        contract.vote(0, [0]);
         assert_eq!(contract.get_voter_count(), 3);
+
+        let result = contract.get_proposal(0);
+        assert_eq!(result.1[0], 3);
+        assert_eq!(result.0, [0x09; 32]);
     }
 }

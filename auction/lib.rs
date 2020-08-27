@@ -17,7 +17,7 @@ mod auction {
         ended: storage::Value<bool>, // is the auction over
         pending_returns: storage::HashMap<AccountId, Balance>, // Allowed withdrawals of previous bids
         created_time: storage::Value<Timestamp>, //time the auction was created
-        end_time: storage::Value<Timestamp>, //time the auction is set to be alwed to end
+        end_time: storage::Value<Timestamp>, //time the auction is set to be allowed to end
     }
 
 
@@ -113,7 +113,7 @@ mod auction {
     impl Auction {
         /// Constructor that initializes the starting_price value to the given `init_value`.
         #[ink(constructor)]
-        fn new(&mut self, init_value: Balance, secs: Timestamp) {
+        fn new(&mut self, init_value: Balance, millisecs: u64) {
             self.beneficiary.set(self.env().caller());
             self.highest_bidder.set(self.env().caller());
             self.starting_price.set(init_value);
@@ -124,9 +124,8 @@ mod auction {
 
             // Timestamps are in milliseconds
             let curr_time: Timestamp = self.env().block_timestamp();
-            let time_offset: Timestamp = secs.saturating_mul(1000);
             self.created_time.set(curr_time);
-            self.end_time.set(curr_time.saturating_add(time_offset));
+            self.end_time.set(curr_time.saturating_add(millisecs));
 
             // emit event
             self.env().emit_event(Created {

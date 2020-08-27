@@ -28,6 +28,10 @@ mod auction {
         beneficiary: Option<AccountId>,
         #[ink(topic)]
         starting_bid: Balance,
+        #[ink(topic)]
+        created_time: Timestamp,
+        #[ink(topic)]
+        end_time: Timestamp,
     }
     
 
@@ -131,6 +135,8 @@ mod auction {
             self.env().emit_event(Created {
                 beneficiary: Some(self.env().caller()),
                 starting_bid: init_value,
+                created_time: curr_time,
+                end_time: curr_time.saturating_add(millisecs),
             });
         }
 

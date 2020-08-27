@@ -16,6 +16,8 @@ mod auction {
         starting_price: storage::Value<Balance>, // starting bid amount (Balance can only be positive)
         ended: storage::Value<bool>, // is the auction over
         pending_returns: storage::HashMap<AccountId, Balance>, // Allowed withdrawals of previous bids
+        created_time: storage::Value<Timestamp>, //time the auction was created
+        end_time: storage::Value<Timestamp>, //time the auction is set to be alwed to end
     }
 
 
@@ -30,7 +32,7 @@ mod auction {
     
 
     #[ink(event)]
-    struct New_Higher_Bid {
+    struct New_Highest_Bid {
         #[ink(topic)]
         previous_highest_bidder: Option<AccountId>,
         #[ink(topic)]
@@ -72,7 +74,7 @@ mod auction {
     }
 
 
-     #[ink(event)]
+    #[ink(event)]
     struct Ended {
         #[ink(topic)]
         highest_bidder: Option<AccountId>,
@@ -88,17 +90,17 @@ mod auction {
         highest_bid: Balance,
     }
 
-     #[ink(event)]
+    #[ink(event)]
     struct No_More_Bidding {
         #[ink(topic)]
-        is_over: bool,
+        is_ended: bool,
         #[ink(topic)]
         highest_bidder: Option<AccountId>,
         #[ink(topic)]
         highest_bid: Balance,
     }
 
-     // events
+
     #[ink(event)]
     struct Not_Beneficiary {
         #[ink(topic)]
@@ -111,13 +113,21 @@ mod auction {
     impl Auction {
         /// Constructor that initializes the starting_price value to the given `init_value`.
         #[ink(constructor)]
-        fn new(&mut self, init_value: Balance) {
+        fn new(&mut self, init_value: Balance, secs: Timestamp) {
             self.beneficiary.set(self.env().caller());
             self.highest_bidder.set(self.env().caller());
             self.starting_price.set(init_value);
             self.highest_bid.set(0);
             self.ended.set(false);
             self.pending_returns.insert(self.env().caller(), 0);
+
+
+            // Timestamps are in milliseconds
+            let curr_time: Timestamp = self.env().block_timestamp();
+            let time_offset: Timestamp = secs.saturating_mul(1000);
+            self.created_time.set(curr_time);
+            self.end_time.set(curr_time.saturating_add(time_offset));
+
             // emit event
             self.env().emit_event(Created {
                 beneficiary: Some(self.env().caller()),
@@ -125,12 +135,11 @@ mod auction {
             });
         }
 
-        /// Constructor that initializes the `bool` value to `false`.
-        ///
+
         /// Constructors can delegate to other constructors.
         #[ink(constructor)]
         fn default(&mut self) {
-            self.new(0)
+            self.new(0, 60)
         }
 
         // Simply returns the current value of our highestBid.
@@ -172,7 +181,7 @@ mod auction {
 
         //is the auction over
         #[ink(message)]
-        fn is_over(&self) -> bool {
+        fn is_ended(&self) -> bool {
             *self.ended
         }
 
@@ -182,11 +191,45 @@ mod auction {
             *self.pending_returns.get(&self.env().caller()).unwrap_or(&0)
         }
 
+        #[ink(message)]
+        fn time_end_allowed(&mut self) -> bool{
+            self.env().block_timestamp() > *self.end_time
+        }
+
+        #[ink(message)]
+        fn get_time(&mut self) -> Timestamp{
+            self.env().block_timestamp()
+        }
+
+        #[ink(message)]
+        fn get_created_time(&mut self) -> Timestamp{
+            *self.created_time
+        }
+
+        #[ink(message)]
+        fn get_end_time(&mut self) -> Timestamp{
+            *self.end_time
+        }
+
+        #[ink(message)]
+        fn get_time_left(&mut self) -> Timestamp{
+            self.get_end_time().saturating_sub(self.get_time())
+        }
+
+
          #[ink(message)]
         fn end(&mut self) -> bool {
-
-            //checks that the caller is the beneficiary
-            if self.beneficiary != self.env().caller() {
+            
+            //making sure the contract was not already ended
+            if *self.ended {
+                self.env().emit_event(Already_Ended {
+                    highest_bidder: Some(self.get_highest_bidder()),
+                    highest_bid: self.get_highest_bid(),
+                });
+                return false
+            }
+            //only allowed to end if you are the benificiary or the time is past end_time
+            else if self.beneficiary != self.env().caller() && !self.time_end_allowed() {
                 self.env().emit_event(Not_Beneficiary {
                     sender: Some(self.env().caller()),
                     beneficiary: Some(*self.beneficiary),
@@ -194,25 +237,14 @@ mod auction {
                 return false
             }
 
-             //making sure the contract was not already ended
-            else if *self.ended {
-                self.env().emit_event(Already_Ended {
-                    highest_bidder: Some(self.get_highest_bidder()),
-                    highest_bid: self.get_highest_bid(),
-                });
-                return false
-            }
+
             self.ended.set(true);
 
-            //give highest bid to beneficiary
-            match self.env().transfer(*self.beneficiary, *self.highest_bid) {
-                Ok(now) => (),
-                Err(error) => {
-                    //since the beneficiary does not recieve the money, the bid does not end
-                    self.ended.set(false);
-                    return false
-                }
-            };
+
+            //add to the highest_bid to the beneficiary pending returns
+            let beneficiary_curr_pending = self.curr_withdrawl_amount(self.get_beneficiary());
+            self.pending_returns.insert(self.get_beneficiary(), 
+                                        beneficiary_curr_pending + *self.highest_bid);
 
 
             // emit event
@@ -238,8 +270,11 @@ mod auction {
             let previous_highest_bid = self.get_highest_bid();
             
 
+            if amount == 0 {
+                return false
+            }
             // if the bid is not higher than the starting price, then return false
-            if amount <= self.get_starting_price() {
+            else if amount <= self.get_starting_price() {
                 //value is to low so allow the sender to collect the funds
                 self.pending_returns.insert(self.env().caller(), amount.into());
 
@@ -269,10 +304,9 @@ mod auction {
             //if the bid is made after the voting closes, return false
             else if *self.ended {
                 self.pending_returns.insert(self.env().caller(), amount.into());
-
                 // emit event
                 self.env().emit_event(No_More_Bidding {
-                    is_over: *self.ended,
+                    is_ended: *self.ended,
                     highest_bidder: Some(self.get_highest_bidder()),
                     highest_bid: self.get_highest_bid(),
                 });
@@ -296,7 +330,7 @@ mod auction {
             self.highest_bidder.set(self.env().caller());
 
             // emit event
-            self.env().emit_event(New_Higher_Bid {
+            self.env().emit_event(New_Highest_Bid {
                 previous_highest_bidder: Some(previous_highest_bidder),
                 previous_highest_bid: previous_highest_bid,
                 highest_bidder: Some(self.env().caller()),
@@ -321,7 +355,7 @@ mod auction {
             match self.env().transfer(sender, amount) {
                 Ok(now) => (),
                 Err(error) => {
-                    //Since the amount is not retunred readd the amount to the pending_returns
+                    //Since the amount is not returned re-add the amount to pending_returns
                     self.pending_returns.insert(sender, amount);
                     return false
                 }
@@ -333,17 +367,6 @@ mod auction {
             });
             true
         }
-
-        // #[ink(message)]
-        // fn get_current_time(&self) -> Timestamp {
-        //     let time = match ink_core::env::block_timestamp::<T>() {
-        //         Ok(now) => now,
-        //         Err(error) => panic!("Error retrieving the time"),
-        //     };
-        //     time
-        // }
-
-
 
     }
 
@@ -371,7 +394,7 @@ mod auction {
         #[test]
         fn new_works() {
             // a positive starting price begins as the highest bid
-            let auction = Auction::new(5);
+            let auction = Auction::new(5, 60);
             assert_eq!(auction.get_starting_price(), 5);
         }
 
@@ -388,48 +411,9 @@ mod auction {
         fn end_works() {
             let mut auction = Auction::default();
             assert!(auction.end());
-            assert!(auction.is_over());
+            assert!(auction.is_ended());
             assert!(!auction.end());
         }
-
-        // #[test]
-        // fn bid_and_withdraw_works() {
-        //     let mut auction = Auction::default();
-        //     assert_eq!(auction.highest_bid, 0);
-        //     assert!(!auction.withdraw());
-        //     // make a bid works
-        //     auction.bid(5);
-        //     assert_eq!(auction.highest_bid, 5);
-        //     // making a higher bid replaces previous bid and also adds to pending amounts
-        //     auction.bid(6);
-        //     assert_eq!(auction.highest_bid, 6);
-        //     assert_eq!(auction.curr_withdrawl_amount(auction.get_highest_bidder()), 5);
-        //     assert_eq!(auction.my_withdrawl_balance(), 5);
-
-        //     //making a bid lower than the highest bid does nothing
-        //     auction.bid(5);
-        //     assert_eq!(auction.highest_bid, 6);
-        //     assert_eq!(auction.curr_withdrawl_amount(auction.get_highest_bidder()), 5);
-        //     //making a higher bid and then adding to the current balance of the pending amount
-        //     auction.bid(7);
-        //     assert_eq!(auction.highest_bid, 7);
-        //     assert_eq!(auction.curr_withdrawl_amount(auction.get_highest_bidder()), 11);
-
-        //     auction.withdraw();
-        //     assert_eq!(auction.curr_withdrawl_amount(auction.get_highest_bidder()), 0);
-        // }
-
-        // //bidding after end
-        // #[test]
-        // fn bid_anfter_end() {
-        //     let mut auction = Auction::default();
-        //     assert_eq!(auction.highest_bid, 0);
-        //     auction.bid(5);
-        //     assert_eq!(auction.highest_bid, 5);
-        //     auction.end();
-        //     assert!(!auction.bid(6));
-            
-        // }
 
     }
 }

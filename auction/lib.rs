@@ -115,7 +115,8 @@ mod auction {
 
 
     impl Auction {
-        /// Constructor that initializes the starting_price value to the given `init_value`.
+        /// Constructor that initializes the starting_price value to the given `init_value`
+        /// and the amount of time (in milliseconds) until non-beneficiaries can bid using 'millisecs'
         #[ink(constructor)]
         fn new(&mut self, init_value: Balance, millisecs: u64) {
             self.beneficiary.set(self.env().caller());
@@ -147,23 +148,24 @@ mod auction {
             self.new(0, 60)
         }
 
-        // Simply returns the current value of our highestBid.
+        /// returns the highestBid.
         fn get_highest_bid(&self) -> Balance {
             *self.highest_bid
         }
 
-        // Simply returns the current value of our highestBid.
+        /// returns the starting_price.
         #[ink(message)]
         fn get_starting_price(&self) -> Balance {
             *self.starting_price
         }
 
+        /// returns the balance in the contract
         #[ink(message)]
         fn get_contract_balance(&self) -> Balance {
             self.env().balance()
         }
 
-        //it gets the highest asking price so far
+        /// returns the highest asking price so far i.e max(highest_bid, starting_price)
         #[ink(message)]
         fn get_current_asking_price(&self) -> Balance {
             if self.get_highest_bid() > self.get_starting_price() {
@@ -172,57 +174,72 @@ mod auction {
             self.get_starting_price()
         }
 
-        // Simply returns the current value of our highestBidder.
+        /// returns the highestBidder.
         #[ink(message)]
         fn get_highest_bidder(&self) -> AccountId {
             *self.highest_bidder
         }
 
-        // beneficiary can end bidding
+        /// returns the AccountId of the beneficiary
         #[ink(message)]
         fn get_beneficiary(&self) -> AccountId {
             * self.beneficiary
         }
 
-        //is the auction over
+        /// returns whether the auction ended
         #[ink(message)]
         fn is_ended(&self) -> bool {
             *self.ended
         }
 
-        //getting sender's withdrawl balance
+        /// returns the sender's withdrawl balance
         #[ink(message)]
         fn my_withdrawl_balance(&self) -> Balance {
             *self.pending_returns.get(&self.env().caller()).unwrap_or(&0)
         }
 
+        /// returns a given accounts withdraw balance  
+         #[ink(message)]
+        fn curr_withdrawl_amount(&self, id: AccountId) -> Balance {
+            *self.pending_returns.get(&id).unwrap_or(&0)
+        }
+
+        /// returns whether a non-beneficiaries can end the auction
         #[ink(message)]
-        fn time_end_allowed(&mut self) -> bool{
+        fn time_end_allowed(&self) -> bool{
             self.env().block_timestamp() > *self.end_time
         }
 
+        /// returns the current block timestamp
         #[ink(message)]
-        fn get_time(&mut self) -> Timestamp{
+        fn get_time(&self) -> Timestamp{
             self.env().block_timestamp()
         }
 
+        /// returns the block timestamp when the auction was created
         #[ink(message)]
-        fn get_created_time(&mut self) -> Timestamp{
+        fn get_created_time(&self) -> Timestamp{
             *self.created_time
         }
 
+        /// returns the block timestamp when the auction is allowed to be ended by non-beneficiaries
         #[ink(message)]
-        fn get_end_time(&mut self) -> Timestamp{
+        fn get_end_time(&self) -> Timestamp{
             *self.end_time
         }
 
+        /// returns the amount of time left in mileseconds until non-beneficiaries can end the auction
         #[ink(message)]
-        fn get_time_left(&mut self) -> Timestamp{
+        fn get_time_left(&self) -> Timestamp{
             self.get_end_time().saturating_sub(self.get_time())
         }
 
 
-         #[ink(message)]
+        /// this function can be called to end the auction and returns a bool indicating whether the call was successful
+        /// note that you can't end the auction more than once, the beneficiary can always end the auction and non-beneficiaries
+        /// can end the auction after the end_time. Ending ends bidding but withdrawing is still allowed. The highest bid will
+        /// be added to the beneficiary's withdraw balance
+        #[ink(message)]
         fn end(&mut self) -> bool {
             
             //making sure the contract was not already ended
@@ -260,32 +277,39 @@ mod auction {
             true
         }
 
-        //returns the pending amount of an account
-         #[ink(message)]
-        fn curr_withdrawl_amount(&self, id: AccountId) -> Balance {
-            *self.pending_returns.get(&id).unwrap_or(&0)
-        }
 
-
+        /// To call this funciton, money must be sent to the contract. Bids under the curent asking price are
+        /// added to the senders withdraw balance. Bids higher than the asking price are locked in the contract
+        /// until either the bid is trumped in which case the bid is returned or the bidding period is ended
+        /// in which case the amount is transfered to the beificiary
         #[ink(message)] 
         fn bid(&mut self) -> bool {
             //the amount transfered to the contract ie the bid amount
             let amount: Balance = self.env().transferred_balance();
-
             let previous_highest_bid = self.get_highest_bid();
-            
+            let sender = self.env().caller();
+            let sender_curr_pending = self.curr_withdrawl_amount(sender);
 
-            if amount == 0 {
+            
+                        //if the bid is made after the voting closes, return false
+            if *self.ended {
+                self.pending_returns.insert(sender, amount + sender_curr_pending);
+                // emit event
+                self.env().emit_event(No_More_Bidding {
+                    is_ended: *self.ended,
+                    highest_bidder: Some(self.get_highest_bidder()),
+                    highest_bid: self.get_highest_bid(),
+                });
                 return false
             }
             // if the bid is not higher than the starting price, then return false
             else if amount <= self.get_starting_price() {
                 //value is to low so allow the sender to collect the funds
-                self.pending_returns.insert(self.env().caller(), amount.into());
+                self.pending_returns.insert(sender, amount + sender_curr_pending);
 
                 // emit event
                 self.env().emit_event(Failed_Bid_Lower_Than_Starting_Price {
-                    attempted_bidder: Some(self.env().caller()),
+                    attempted_bidder: Some(sender),
                     attempted_bid: amount,
                     starting_price: *self.starting_price,
                 });
@@ -294,24 +318,12 @@ mod auction {
             // if the bid is not higher than the current highest, then return false
             else if amount <= previous_highest_bid {
                 //value is to low so allow the sender to collect the funds
-                self.pending_returns.insert(self.env().caller(), amount.into());
+                self.pending_returns.insert(sender, amount + sender_curr_pending);
 
                 // emit event
                 self.env().emit_event(Failed_Bid_Lower_Than_Highest_Bid {
-                    attempted_bidder: Some(self.env().caller()),
+                    attempted_bidder: Some(sender),
                     attempted_bid: amount,
-                    highest_bidder: Some(self.get_highest_bidder()),
-                    highest_bid: self.get_highest_bid(),
-                });
-                return false
-            }
-
-            //if the bid is made after the voting closes, return false
-            else if *self.ended {
-                self.pending_returns.insert(self.env().caller(), amount.into());
-                // emit event
-                self.env().emit_event(No_More_Bidding {
-                    is_ended: *self.ended,
                     highest_bidder: Some(self.get_highest_bidder()),
                     highest_bid: self.get_highest_bid(),
                 });
@@ -345,14 +357,16 @@ mod auction {
             true
         }
 
+
+        /// this function transfers all the sender's pending withdraw balance to the sender
         #[ink(message)]
         fn withdraw(&mut self) -> bool {
             let sender = self.env().caller();
             let amount = self.curr_withdrawl_amount(sender);
+            
             if amount == 0 {
                 return false
             }
-            
             //remove the balance
             self.pending_returns.insert(sender, 0);
             
